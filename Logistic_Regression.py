@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 import os
 import matplotlib.pyplot as plt
+import pickle
 
 # %%
 def load_images(path: str) -> list:
@@ -38,14 +39,15 @@ print(train_imgs.shape, train_label.shape)
 print(test_imgs.shape, test_label.shape)
 
 # %%
-def softmax_func(x: np.ndarray, W: np.ndarray) -> np.ndarray:
+def softmax_func(X: np.ndarray, W: np.ndarray) -> np.ndarray:
     '''
     Softmax function for calculating the posterior probability
-    x should be (N+1)x1
-    Return a 1xK array
+    X should be Mx(N+1)
+    Return a MxK matrix
     '''
-    x = x[:, None]
-    return np.exp(x.T @ W)/np.sum(np.exp(x.T @ W))
+    exp = np.exp(X @ W)
+    sum = np.sum(np.exp(X @ W), axis=1)
+    return exp/sum[:, None]
 
 def logistic_loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
     '''
@@ -54,14 +56,14 @@ def logistic_loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
     # Add the bias coefficient to the data
     X = np.hstack((X, np.ones((X.shape[0], 1))))
 
+    log_likelihood = np.log(softmax_func(X, W))
     total_loss = 0.0
     for i in range(X.shape[0]):
         # Create the Kx1 binary vector with 1‐of‐K encoding
         t = np.zeros(W.shape[1])
         t[int(y[i])-1] = 1
 
-        log_likelihood = t @ np.log(softmax_func(X[i], W)).T
-        total_loss += log_likelihood[0]
+        total_loss += t @ log_likelihood[i, :].T
     
     return -total_loss/X.shape[0]
 
@@ -73,14 +75,12 @@ def logistic_loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarra
     # Add the bias coefficient to the data
     X = np.hstack((X, np.ones((X.shape[0], 1))))
 
-    total_grad = np.zeros(shape=(W.shape))
-    for i in range(X.shape[0]):
-        # Create the Kx1 binary vector with 1‐of‐K encoding
-        t = np.zeros(W.shape[1])
-        t[int(y[i])-1] = 1
+    # Create the Kx1 binary vector with 1‐of‐K encoding
+    t = np.zeros((y.shape[0], W.shape[1]))
+    t[np.arange(y.size), y.astype(int)-1] = 1
 
-        y_diff = t-softmax_func(X[i], W)[0]
-        total_grad += X[i][:, None] @ y_diff[None, :]
+    y_diff = t-softmax_func(X, W)
+    total_grad = X.T @ y_diff
     
     return -total_grad/X.shape[0]
 
@@ -88,22 +88,40 @@ def classification_accuracy(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> floa
     '''
     Classification accuracy for the predicted and true labels
     '''
+    # Add the bias coefficient to the data
     X = np.hstack((X, np.ones((X.shape[0], 1))))
 
-    accuracy = 0.0
-    for i in range(X.shape[0]):
-        # Select the largest probability
-        y_pred = np.argmax(softmax_func(X[i], W))+1
-        if y_pred == y[i]:
-            accuracy += 1/X.shape[0]
+    # Select the largest probability
+    y_pred = np.argmax(softmax_func(X, W), axis=1)+1
+    
+    accuracy = np.sum(y_pred == y)/X.shape[0]
 
     return accuracy*100
+
+def digit_accuracy(X: np.ndarray, W: np.ndarray, y: np.ndarray):
+    '''
+    Classification accuracy for each of the digits
+    '''
+    # Add the bias coefficient to the data
+    X = np.hstack((X, np.ones((X.shape[0], 1))))
+
+    # Select the largest probability
+    y_pred = np.argmax(softmax_func(X, W), axis=1)+1
+    
+    for i in range(W.shape[1]):
+        y_i = y[y==i+1]
+        y_pred_i = y_pred[y==i+1]
+        accuracy = np.sum(y_pred_i == y_i)/y_i.shape[0]
+        print("Digit", i+1, "accuracy:", accuracy)
+    
+    print("\n")
+
 
 def gradient_descent(train_X: np.ndarray, train_y: np.ndarray, test_X: np.ndarray, test_y: np.ndarray,\
                          W: np.ndarray, tolerance: float):
     '''
     Steepest gradient descent with a stepsize of inverse square root of iteration number
-    The stopping condition is the residual of the gradient
+    The stopping condition is the residual of the gradient and a maximum iteration number of 200
 
     X should be Mx(N+1)
     W should be (N+1)xK
@@ -121,7 +139,7 @@ def gradient_descent(train_X: np.ndarray, train_y: np.ndarray, test_X: np.ndarra
     res = np.linalg.norm(grad)
 
     iteration = 1
-    while res > tolerance:
+    while res > tolerance and iteration != 200:
         alpha = 1/np.sqrt(iteration)
         W = W - alpha*grad
 
@@ -159,16 +177,22 @@ num_classes = 5
 W = np.zeros(shape=(num_features+1, num_classes))
 
 results = gradient_descent(train_X=train_imgs, train_y=train_label, test_X=test_imgs, \
-                            test_y=test_label, W=W, tolerance=10**-1)
+                            test_y=test_label, W=W, tolerance=10**-2)
 
 training_accuracy, testing_accuracy, training_loss, testing_loss, W_optimal = results
 iteration = np.arange(len(training_accuracy))
+
+print("Training digits")
+digit_accuracy(X=train_imgs, W=W_optimal, y=train_label)
+print("Testing digits")
+digit_accuracy(X=test_imgs, W=W_optimal, y=test_label)
 
 plt.figure(figsize=(8, 5))
 plt.plot(iteration, training_accuracy, label="Training accuracy")
 plt.plot(iteration, testing_accuracy, label="Testing accuracy")
 plt.xlabel("Iteration", fontsize=14)
 plt.ylabel("Percentage", fontsize=14)
+plt.legend()
 plt.show()
 
 plt.figure(figsize=(8, 5))
@@ -176,12 +200,18 @@ plt.plot(iteration, training_loss, label="Training loss")
 plt.plot(iteration, testing_loss, label="Testing loss")
 plt.xlabel("Iteration", fontsize=14)
 plt.ylabel("Loss", fontsize=14)
+plt.legend()
 plt.show()
 
-for i in range(W_optimal.shape[1]):
-    plt.imshow(W_optimal[:, i].reshape(28,28))
+for i in range(num_classes):
+    plt.imshow(W_optimal[:num_features, i].reshape(28,28))
     plt.colorbar()
     plt.show()
+
+filehandler = open("multiclass_parameters.txt","wb")
+pickle.dump(W_optimal, filehandler)
+filehandler.close()
+
 
 
 # %%
