@@ -87,26 +87,31 @@ def backward_propagation_output_hidden(y_output: tf.Tensor, y_label: tf.Tensor, 
 
     loss_grad = -tf.divide(y_label, y_output)
 
-    dsigma_dz = np.zeros((num_data, num_output, num_output))
-    for i in range(dsigma_dz.shape[0]):
-        for j in range(dsigma_dz.shape[1]):
-            for k in range(dsigma_dz.shape[2]):
+    H2_grad = np.zeros((num_data, prev_num_output))
+    W3_grad = tf.zeros((prev_num_output, num_output))
+    b3_grad = tf.zeros((num_output))
+
+    for i in range(num_data):
+        dsigma_dz = np.zeros((num_output, num_output))
+        for j in range(dsigma_dz.shape[0]):
+            for k in range(dsigma_dz.shape[1]):
                 if j == k:
-                    dsigma_dz[i][j][k] = y_output[i][j]*(1-y_output[i][j])
+                    dsigma_dz[j][k] = y_output[i][j]*(1-y_output[i][j])
                 else:
-                    dsigma_dz[i][j][k] = -y_output[i][j]*y_output[i][k]
-    dsigma_dz = tf.convert_to_tensor(dsigma_dz, dtype=tf.float32)
+                    dsigma_dz[j][k] = -y_output[i][j]*y_output[i][k]
+        dsigma_dz = tf.convert_to_tensor(dsigma_dz, dtype=tf.float32)
 
-    dz_dW3 = np.zeros((num_data, prev_num_output, num_output, num_output))
-    for i in range(dz_dW3.shape[0]):
-        for j in range(dz_dW3.shape[2]):
-            dz_dW3[i, :, j, j] = H2[i].numpy()
-    dz_dW3 = tf.convert_to_tensor(dz_dW3, dtype=tf.float32)
+        dz_dW3 = np.zeros((prev_num_output, num_output, num_output))
+        for j in range(dz_dW3.shape[1]):
+            dz_dW3[:, j, j] = H2[i].numpy()
+        dz_dW3 = tf.convert_to_tensor(dz_dW3, dtype=tf.float32)
 
-    dsigma_dz_loss_grad = tf.matmul(dsigma_dz, loss_grad[:, :, None])
-    H2_grad = tf.einsum("ij, kjl -> ki", W3, dsigma_dz_loss_grad)
-    W3_grad = tf.einsum("ijkl, ilm -> jk", dz_dW3, dsigma_dz_loss_grad)
-    b3_grad = tf.math.reduce_sum(dsigma_dz_loss_grad, axis=0)
+        dsigma_dz_loss_grad = tf.einsum("ij, j -> i", dsigma_dz, loss_grad[i])
+        H2_grad[i] = tf.einsum("ij, j -> i", W3, dsigma_dz_loss_grad).numpy()
+        W3_grad += tf.einsum("ijk, k -> ij", dz_dW3, dsigma_dz_loss_grad)
+        b3_grad += dsigma_dz_loss_grad
+
+    H2_grad = tf.convert_to_tensor(H2_grad, dtype=tf.float32) 
 
     return H2_grad/num_data, W3_grad/num_data, b3_grad/num_data
 
@@ -124,23 +129,28 @@ def backward_propagation_hidden_hidden(H1: tf.Tensor, H2_grad: tf.Tensor, W2: np
 
     z = tf.matmul(H1, W2) + tf.transpose(b2[:, None])
 
-    dphi_dz = np.zeros((num_data, num_output, num_output))
-    for i in range(dphi_dz.shape[0]):
-        for j in range(dphi_dz.shape[1]):
+    H1_grad = np.zeros((num_data, prev_num_output))
+    W2_grad = tf.zeros((prev_num_output, num_output))
+    b2_grad = tf.zeros((num_output))
+
+    for i in range(num_data):
+        dphi_dz = np.zeros((num_output, num_output))
+        for j in range(dphi_dz.shape[0]):
             if z[i][j] > 0:
-                dphi_dz[i][j][j] = 1
-    dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
+                dphi_dz[j][j] = 1
+        dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
 
-    dz_dW2 = np.zeros((num_data, prev_num_output, num_output, num_output))
-    for i in range(dz_dW2.shape[0]):
-        for j in range(dz_dW2.shape[2]):
-            dz_dW2[i, :, j, j] = H1[i].numpy()
-    dz_dW2 = tf.convert_to_tensor(dz_dW2, dtype=tf.float32)
+        dz_dW2 = np.zeros((prev_num_output, num_output, num_output))
+        for j in range(dz_dW2.shape[1]):
+            dz_dW2[:, j, j] = H1[i].numpy()
+        dz_dW2 = tf.convert_to_tensor(dz_dW2, dtype=tf.float32)
 
-    dphi_dz_H2_grad = tf.matmul(dphi_dz, H2_grad[:, :, None])
-    H1_grad = tf.einsum("ij, kjl -> ki", W2, dphi_dz_H2_grad)
-    W2_grad = tf.einsum("ijkl, ilm -> jk", dz_dW2, dphi_dz_H2_grad)
-    b2_grad = tf.math.reduce_sum(dphi_dz_H2_grad, axis=0)
+        dphi_dz_H2_grad = tf.einsum("ij, j -> i", dphi_dz, H2_grad[i])
+        H1_grad[i] = tf.einsum("ij, j -> i", W2, dphi_dz_H2_grad).numpy()
+        W2_grad += tf.einsum("ijk, k -> ij", dz_dW2, dphi_dz_H2_grad)
+        b2_grad += dphi_dz_H2_grad
+
+    H1_grad = tf.convert_to_tensor(H1_grad, dtype=tf.float32)
 
     return H1_grad/num_data, W2_grad/num_data, b2_grad/num_data
 
@@ -158,22 +168,24 @@ def backward_propagation_hidden_input(X: tf.Tensor, H1_grad: tf.Tensor, W1: np.n
 
     z = tf.matmul(X, W1) + tf.transpose(b1[:, None])
 
-    dphi_dz = np.zeros((num_data, num_output, num_output))
-    for i in range(dphi_dz.shape[0]):
-        for j in range(dphi_dz.shape[1]):
+    W1_grad = tf.zeros((prev_num_output, num_output))
+    b1_grad = tf.zeros((num_output))
+
+    for i in range(num_data):
+        dphi_dz = np.zeros((num_output, num_output))
+        for j in range(dphi_dz.shape[0]):
             if z[i][j] > 0:
-                dphi_dz[i][j][j] = 1
-    dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
+                dphi_dz[j][j] = 1
+        dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
 
-    dz_dW1 = np.zeros((num_data, prev_num_output, num_output, num_output))
-    for i in range(dz_dW1.shape[0]):
-        for j in range(dz_dW1.shape[2]):
-            dz_dW1[i, :, j, j] = X[i].numpy()
-    dz_dW1 = tf.convert_to_tensor(dz_dW1, dtype=tf.float32)
+        dz_dW1 = np.zeros((prev_num_output, num_output, num_output))
+        for j in range(dz_dW1.shape[1]):
+            dz_dW1[:, j, j] = X[i].numpy()
+        dz_dW1 = tf.convert_to_tensor(dz_dW1, dtype=tf.float32)
 
-    dphi_dz_H1_grad = tf.matmul(dphi_dz, H1_grad[:, :, None])
-    W1_grad = tf.einsum("ijkl, ilm -> jk", dz_dW1, dphi_dz_H1_grad)
-    b1_grad = tf.math.reduce_sum(dphi_dz_H1_grad, axis=0)
+        dphi_dz_H1_grad = tf.einsum("ij, j -> i", dphi_dz, H1_grad[i])
+        W1_grad += tf.einsum("ijk, k -> ij", dz_dW1, dphi_dz_H1_grad)
+        b1_grad += dphi_dz_H1_grad
 
     return W1_grad/num_data, b1_grad/num_data
 
@@ -197,22 +209,18 @@ def neural_network_model(train_dataset, test_dataset, step_size: float):
             H2 = hidden2(H1)
             y_output = output(H2)
 
-            W1 = hidden1.get_weights()[0]
-            b1 = hidden1.get_weights()[1]
-            W2 = hidden2.get_weights()[0]
-            b2 = hidden2.get_weights()[1]
-            W3 = output.get_weights()[0]
-            b3 = output.get_weights()[1]
+            W1 = hidden1.trainable_weights[0]
+            b1 = hidden1.trainable_weights[1]
+            W2 = hidden2.trainable_weights[0]
+            b2 = hidden2.trainable_weights[1]
+            W3 = output.trainable_weights[0]
+            b3 = output.trainable_weights[1]
 
             H2_grad, W3_grad, b3_grad = backward_propagation_output_hidden(y_output, y, W3, H2)
             H1_grad, W2_grad, b2_grad = backward_propagation_hidden_hidden(H1, H2_grad, W2, b2)
             W1_grad, b1_grad = backward_propagation_hidden_input(x, H1_grad, W1, b1)
 
             optimizer.apply_gradients(zip([W1_grad, b1_grad, W2_grad, b2_grad, W3_grad, b3_grad], [W1, b1, W2, b2, W3, b3]))
-
-            hidden1.set_weights([W1, b1])
-            hidden2.set_weights([W2, b2])
-            output.set_weights([W3, b3])
 
         test_x, test_y = zip(*test_dataset)
         test_output = output(hidden2(hidden1(test_x)))
