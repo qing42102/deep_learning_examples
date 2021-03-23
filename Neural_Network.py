@@ -5,7 +5,7 @@ import numpy as np
 import tensorflow as tf
 from PIL import Image
 import os
-# import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import pickle
 import time
 
@@ -28,7 +28,6 @@ def load_images(path: str) -> list:
 
     return imgs
 
-os.chdir("deep_learning_examples/")
 train_imgs = load_images("train_data/")
 test_imgs = load_images("test_data/")
 
@@ -61,8 +60,8 @@ def loss(y_output: tf.Tensor, y_label: tf.Tensor) -> float:
 
     total_loss = 0.0
     for i in range(y_output.shape[0]):
-        loss = tf.matmul(tf.transpose(y_label[i]), tf.math.log(y_output[i]))
-        total_loss += loss
+        loss = tf.tensordot(y_label[i], tf.math.log(y_output[i]), axes=1)
+        total_loss += loss.numpy()
     
     return -total_loss/y_output.shape[0]
 
@@ -70,25 +69,41 @@ def classification_accuracy(y_output: tf.Tensor, y_label: tf.Tensor) -> float:
     '''
     Classification accuracy for the predicted and true labels
     '''
-    
-    accuracy = tf.math.reduce_sum(y_output == y_label)/y_output.shape[0]
+    # Revert the one-hot vector
+    y_label = tf.where(tf.equal(y_label, 1))[:, 1]
+
+    # Select the largest probability
+    y_output = tf.argmax(y_output, axis=1)
+
+    correct = tf.cast(y_output == y_label, tf.float32)
+    accuracy = tf.math.reduce_sum(correct).numpy()/y_output.shape[0]
+
     return accuracy*100
 
-def digit_accuracy(y_output: tf.Tensor, y_label: tf.Tensor):
+def digit_accuracy(y_output: tf.Tensor, y_label: tf.Tensor, num_classes: int):
     '''
     Classification accuracy for each of the digits
-    '''
+    '''    
+    # Revert the one-hot vector
+    y_label = tf.where(tf.equal(y_label, 1))[:, 1]
+
+    # Select the largest probability
+    y_output = tf.argmax(y_output, axis=1)
     
-    for i in range(y_label.shape[1]):
+    for i in range(num_classes):
         y_i = y_label[y_label==i]
         y_output_i = y_output[y_label==i]
-        accuracy = tf.math.reduce_sum(y_output_i == y_i)/y_output_i.shape[0]
-        print("Digit", i, "accuracy:", accuracy)
+
+        correct = tf.cast(y_output_i == y_i, tf.float32)
+        accuracy = tf.math.reduce_sum(correct).numpy()/y_output_i.shape[0]
+
+        print("Digit", i, "accuracy:", accuracy*100)
     
     print("\n")
 
 def backward_propagation_output_hidden(y_output: tf.Tensor, y_label: tf.Tensor, W3: np.ndarray, H2: tf.Tensor):
     '''
+    Back propagation from output to hidden layer
     y_output is a MxK tensor
     y_label is a MxK tensor
     W3 is a 100xK tensor
@@ -110,18 +125,13 @@ def backward_propagation_output_hidden(y_output: tf.Tensor, y_label: tf.Tensor, 
 
     # Sum over each data point
     for i in range(num_data):
-        dsigma_dz = np.zeros((num_output, num_output))
-        tf.linalg.set_diag(dsigma_dz, y_output[i]*(1-y_output[i]))
-        # Since it's symmetric we only need to calculate half of the values
-        for j in range(dsigma_dz.shape[0]):
-            for k in range(j+1, dsigma_dz.shape[1]):
-                dsigma_dz[j][k] = -y_output[i][j]*y_output[i][k]
-        dsigma_dz += np.triu(dsigma_dz, k=1).T
-        dsigma_dz = tf.convert_to_tensor(dsigma_dz, dtype=tf.float32)
+        # Calculate the off diaognals elements and then the diagonal
+        dsigma_dz = tf.matmul(-y_output[i][:, None], y_output[i][None, :])
+        dsigma_dz = tf.linalg.set_diag(dsigma_dz, y_output[i]*(1-y_output[i]))
 
         dz_dW3 = np.zeros((prev_num_output, num_output, num_output))
-        for j in range(dz_dW3.shape[1]):
-            dz_dW3[:, j, j] = H2[i].numpy()
+        # Set the diagonal of the 2nd and 3rd axis
+        dz_dW3[:, np.eye(dz_dW3.shape[1], dtype=bool)] = H2[i][:, None]
         dz_dW3 = tf.convert_to_tensor(dz_dW3, dtype=tf.float32)
 
         dsigma_dz_loss_grad = tf.matmul(dsigma_dz, loss_grad[i][:, None])
@@ -135,6 +145,7 @@ def backward_propagation_output_hidden(y_output: tf.Tensor, y_label: tf.Tensor, 
 
 def backward_propagation_hidden_hidden(H1: tf.Tensor, H2_grad: tf.Tensor, W2: np.ndarray, b2: np.ndarray):
     '''
+    Back propagation from hidden to hidden layer
     H1 is a Mx100 tensor
     H2_grad is a 50x100 tensor
     W2 is a 100x100 tensor
@@ -156,14 +167,13 @@ def backward_propagation_hidden_hidden(H1: tf.Tensor, H2_grad: tf.Tensor, W2: np
 
     # Sum over each data point
     for i in range(num_data):
-        dphi_dz = np.zeros((num_output, num_output))
+        dphi_dz = tf.zeros((num_output, num_output))
         # Set the diagonal based on the sign of z[i]
-        tf.linalg.set_diag(dphi_dz, tf.cast(z[i]>0, tf.float32))
-        dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
+        dphi_dz = tf.linalg.set_diag(dphi_dz, tf.cast(z[i]>0, tf.float32))
 
         dz_dW2 = np.zeros((prev_num_output, num_output, num_output))
-        for j in range(dz_dW2.shape[1]):
-            dz_dW2[:, j, j] = H1[i].numpy()
+        # Set the diagonal of the 2nd and 3rd axis
+        dz_dW2[:, np.eye(dz_dW2.shape[1], dtype=bool)] = H1[i][:, None]
         dz_dW2 = tf.convert_to_tensor(dz_dW2, dtype=tf.float32)
 
         dphi_dz_H2_grad = tf.matmul(dphi_dz, H2_grad[i][:, None])
@@ -177,6 +187,7 @@ def backward_propagation_hidden_hidden(H1: tf.Tensor, H2_grad: tf.Tensor, W2: np
 
 def backward_propagation_hidden_input(X: tf.Tensor, H1_grad: tf.Tensor, W1: np.ndarray, b1: np.ndarray):
     '''
+    Back propagation from hidden to input layer
     X is a Mx784 tensor
     H1_grad is a 50x100 tensor
     W1 is a 784x100 tensor
@@ -196,14 +207,13 @@ def backward_propagation_hidden_input(X: tf.Tensor, H1_grad: tf.Tensor, W1: np.n
 
     # Sum over each data point
     for i in range(num_data):
-        dphi_dz = np.zeros((num_output, num_output))
+        dphi_dz = tf.zeros((num_output, num_output))
         # Set the diagonal based on the sign of z[i]
-        tf.linalg.set_diag(dphi_dz, tf.cast(z[i]>0, tf.float32))
-        dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
+        dphi_dz = tf.linalg.set_diag(dphi_dz, tf.cast(z[i]>0, tf.float32))
 
         dz_dW1 = np.zeros((prev_num_output, num_output, num_output))
-        for j in range(dz_dW1.shape[1]):
-            dz_dW1[:, j, j] = X[i].numpy()
+        # Set the diagonal of the 2nd and 3rd axis
+        dz_dW1[:, np.eye(dz_dW1.shape[1], dtype=bool)] = X[i][:, None]
         dz_dW1 = tf.convert_to_tensor(dz_dW1, dtype=tf.float32)
 
         dphi_dz_H1_grad = tf.matmul(dphi_dz, H1_grad[i][:, None])
@@ -212,17 +222,20 @@ def backward_propagation_hidden_input(X: tf.Tensor, H1_grad: tf.Tensor, W1: np.n
 
     return W1_grad/num_data, b1_grad/num_data
 
-def neural_network_model(train_dataset, test_dataset, test_label, step_size: float):
+def neural_network_model(train_dataset, test_dataset, test_label):
     '''
     X is a MxN tensor
     y is a MxK tensor
     '''
 
+    # Get the entire training dataset as one tensor
+    entire_train_x = tf.concat([x for x, y in train_dataset], axis=0)
+    entire_train_y = tf.concat([y for x, y in train_dataset], axis=0)
+
+    # Neural network layers for forward propagation
     hidden1 = tf.keras.layers.Dense(100, activation = 'relu')
     hidden2 = tf.keras.layers.Dense(100, activation='relu')
     output = tf.keras.layers.Dense(10, activation='softmax')
-
-    optimizer = tf.keras.optimizers.SGD(learning_rate=step_size)
     
     training_accuracy_list = []
     testing_accuracy_list = []
@@ -230,8 +243,12 @@ def neural_network_model(train_dataset, test_dataset, test_label, step_size: flo
     testing_loss_list = []
 
     epoch = 0
-    while epoch < 2:
+    while epoch < 1:
         epoch += 1
+
+        stepsize = 1/epoch
+        optimizer = tf.keras.optimizers.SGD(learning_rate=stepsize)
+
         iteration = 0
         for x, y in train_dataset:
             iteration += 1
@@ -258,18 +275,53 @@ def neural_network_model(train_dataset, test_dataset, test_label, step_size: flo
             # Apply the gradient to each parameter
             optimizer.apply_gradients(zip([W1_grad, b1_grad, W2_grad, b2_grad, W3_grad, b3_grad], [W1, b1, W2, b2, W3, b3]))
 
-        test_output = output(hidden2(hidden1(test_dataset)))
-        testing_accuracy = classification_accuracy(test_output, test_label)
+            if iteration % 10 == 0:
+                train_output = output(hidden2(hidden1(entire_train_x)))
+                training_accuracy = classification_accuracy(train_output, entire_train_y)
+                training_loss = loss(train_output, entire_train_y)
 
-        print("Testing Accuracy:", testing_accuracy)
+                test_output = output(hidden2(hidden1(test_dataset)))
+                testing_accuracy = classification_accuracy(test_output, test_label)
+                testing_loss = loss(test_output, test_label)
+                
+                training_accuracy_list.append(training_accuracy)
+                testing_accuracy_list.append(testing_accuracy)
+                training_loss_list.append(training_loss)
+                testing_loss_list.append(testing_loss)
 
-    return 
+                print("Testing Accuracy:", testing_accuracy)
+
+    digit_accuracy(test_output, test_label, num_classes)
+
+    W_optimal = [W1.numpy(), b1.numpy(), W2.numpy(), b2.numpy(), W3.numpy(), b3.numpy()]
+
+    return W_optimal, training_accuracy_list, testing_accuracy_list, training_loss_list, testing_loss_list
 
 # %%
 
 tf.random.set_seed(0)
 
-# Initialize the weight vectors including the bias 
-neural_network_model(train_dataset, test_dataset, test_label, step_size=10**-2)
+results = neural_network_model(train_dataset, test_dataset, test_label)
+W_optimal, training_accuracy, testing_accuracy, training_loss, testing_loss = results
 
+iteration = np.arange(len(training_accuracy)*10, step=10)
 
+plt.figure(figsize=(8, 5))
+plt.plot(iteration, training_accuracy, label="Training accuracy")
+plt.plot(iteration, testing_accuracy, label="Testing accuracy")
+plt.xlabel("Iteration", fontsize=14)
+plt.ylabel("Percentage", fontsize=14)
+plt.legend()
+plt.show()
+
+plt.figure(figsize=(8, 5))
+plt.plot(iteration, training_loss, label="Training loss")
+plt.plot(iteration, testing_loss, label="Testing loss")
+plt.xlabel("Iteration", fontsize=14)
+plt.ylabel("Loss", fontsize=14)
+plt.legend()
+plt.show()
+
+filehandler = open("nn_parameters.txt","wb") 
+pickle.dump(W_optimal, filehandler, protocol=2) 
+filehandler.close() 
