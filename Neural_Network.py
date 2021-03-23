@@ -5,8 +5,9 @@ import numpy as np
 import tensorflow as tf
 from PIL import Image
 import os
-import matplotlib.pyplot as plt
+# import matplotlib.pyplot as plt
 import pickle
+import time
 
 # %%
 def load_images(path: str) -> list:
@@ -73,6 +74,19 @@ def classification_accuracy(y_output: tf.Tensor, y_label: tf.Tensor) -> float:
     accuracy = tf.math.reduce_sum(y_output == y_label)/y_output.shape[0]
     return accuracy*100
 
+def digit_accuracy(y_output: tf.Tensor, y_label: tf.Tensor):
+    '''
+    Classification accuracy for each of the digits
+    '''
+    
+    for i in range(y_label.shape[1]):
+        y_i = y_label[y_label==i]
+        y_output_i = y_output[y_label==i]
+        accuracy = tf.math.reduce_sum(y_output_i == y_i)/y_output_i.shape[0]
+        print("Digit", i, "accuracy:", accuracy)
+    
+    print("\n")
+
 def backward_propagation_output_hidden(y_output: tf.Tensor, y_label: tf.Tensor, W3: np.ndarray, H2: tf.Tensor):
     '''
     y_output is a MxK tensor
@@ -87,18 +101,22 @@ def backward_propagation_output_hidden(y_output: tf.Tensor, y_label: tf.Tensor, 
 
     loss_grad = -tf.divide(y_label, y_output)
 
+    # H2_grad should be Mx100
+    # W3_grad should be 100x10
+    # b3_grad should be 10x1
     H2_grad = np.zeros((num_data, prev_num_output))
     W3_grad = tf.zeros((prev_num_output, num_output))
     b3_grad = tf.zeros((num_output))
 
+    # Sum over each data point
     for i in range(num_data):
         dsigma_dz = np.zeros((num_output, num_output))
+        tf.linalg.set_diag(dsigma_dz, y_output[i]*(1-y_output[i]))
+        # Since it's symmetric we only need to calculate half of the values
         for j in range(dsigma_dz.shape[0]):
-            for k in range(dsigma_dz.shape[1]):
-                if j == k:
-                    dsigma_dz[j][k] = y_output[i][j]*(1-y_output[i][j])
-                else:
-                    dsigma_dz[j][k] = -y_output[i][j]*y_output[i][k]
+            for k in range(j+1, dsigma_dz.shape[1]):
+                dsigma_dz[j][k] = -y_output[i][j]*y_output[i][k]
+        dsigma_dz += np.triu(dsigma_dz, k=1).T
         dsigma_dz = tf.convert_to_tensor(dsigma_dz, dtype=tf.float32)
 
         dz_dW3 = np.zeros((prev_num_output, num_output, num_output))
@@ -106,10 +124,10 @@ def backward_propagation_output_hidden(y_output: tf.Tensor, y_label: tf.Tensor, 
             dz_dW3[:, j, j] = H2[i].numpy()
         dz_dW3 = tf.convert_to_tensor(dz_dW3, dtype=tf.float32)
 
-        dsigma_dz_loss_grad = tf.einsum("ij, j -> i", dsigma_dz, loss_grad[i])
-        H2_grad[i] = tf.einsum("ij, j -> i", W3, dsigma_dz_loss_grad).numpy()
-        W3_grad += tf.einsum("ijk, k -> ij", dz_dW3, dsigma_dz_loss_grad)
-        b3_grad += dsigma_dz_loss_grad
+        dsigma_dz_loss_grad = tf.matmul(dsigma_dz, loss_grad[i][:, None])
+        H2_grad[i] = tf.matmul(W3, dsigma_dz_loss_grad).numpy()[:, 0]
+        W3_grad += tf.matmul(dz_dW3, dsigma_dz_loss_grad)[:, :, 0]
+        b3_grad += dsigma_dz_loss_grad[:, 0]
 
     H2_grad = tf.convert_to_tensor(H2_grad, dtype=tf.float32) 
 
@@ -129,15 +147,18 @@ def backward_propagation_hidden_hidden(H1: tf.Tensor, H2_grad: tf.Tensor, W2: np
 
     z = tf.matmul(H1, W2) + tf.transpose(b2[:, None])
 
+    # H1_grad should be Mx100
+    # W2_grad should be 100x100
+    # b2_grad should be 100x1
     H1_grad = np.zeros((num_data, prev_num_output))
     W2_grad = tf.zeros((prev_num_output, num_output))
     b2_grad = tf.zeros((num_output))
 
+    # Sum over each data point
     for i in range(num_data):
         dphi_dz = np.zeros((num_output, num_output))
-        for j in range(dphi_dz.shape[0]):
-            if z[i][j] > 0:
-                dphi_dz[j][j] = 1
+        # Set the diagonal based on the sign of z[i]
+        tf.linalg.set_diag(dphi_dz, tf.cast(z[i]>0, tf.float32))
         dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
 
         dz_dW2 = np.zeros((prev_num_output, num_output, num_output))
@@ -145,10 +166,10 @@ def backward_propagation_hidden_hidden(H1: tf.Tensor, H2_grad: tf.Tensor, W2: np
             dz_dW2[:, j, j] = H1[i].numpy()
         dz_dW2 = tf.convert_to_tensor(dz_dW2, dtype=tf.float32)
 
-        dphi_dz_H2_grad = tf.einsum("ij, j -> i", dphi_dz, H2_grad[i])
-        H1_grad[i] = tf.einsum("ij, j -> i", W2, dphi_dz_H2_grad).numpy()
-        W2_grad += tf.einsum("ijk, k -> ij", dz_dW2, dphi_dz_H2_grad)
-        b2_grad += dphi_dz_H2_grad
+        dphi_dz_H2_grad = tf.matmul(dphi_dz, H2_grad[i][:, None])
+        H1_grad[i] = tf.matmul(W2, dphi_dz_H2_grad).numpy()[:, 0]
+        W2_grad += tf.matmul(dz_dW2, dphi_dz_H2_grad)[:, :, 0]
+        b2_grad += dphi_dz_H2_grad[:, 0]
 
     H1_grad = tf.convert_to_tensor(H1_grad, dtype=tf.float32)
 
@@ -168,14 +189,16 @@ def backward_propagation_hidden_input(X: tf.Tensor, H1_grad: tf.Tensor, W1: np.n
 
     z = tf.matmul(X, W1) + tf.transpose(b1[:, None])
 
+    # W1_grad should be 784x100
+    # b1_grad should be 100x1
     W1_grad = tf.zeros((prev_num_output, num_output))
     b1_grad = tf.zeros((num_output))
 
+    # Sum over each data point
     for i in range(num_data):
         dphi_dz = np.zeros((num_output, num_output))
-        for j in range(dphi_dz.shape[0]):
-            if z[i][j] > 0:
-                dphi_dz[j][j] = 1
+        # Set the diagonal based on the sign of z[i]
+        tf.linalg.set_diag(dphi_dz, tf.cast(z[i]>0, tf.float32))
         dphi_dz = tf.convert_to_tensor(dphi_dz, dtype=tf.float32)
 
         dz_dW1 = np.zeros((prev_num_output, num_output, num_output))
@@ -183,13 +206,13 @@ def backward_propagation_hidden_input(X: tf.Tensor, H1_grad: tf.Tensor, W1: np.n
             dz_dW1[:, j, j] = X[i].numpy()
         dz_dW1 = tf.convert_to_tensor(dz_dW1, dtype=tf.float32)
 
-        dphi_dz_H1_grad = tf.einsum("ij, j -> i", dphi_dz, H1_grad[i])
-        W1_grad += tf.einsum("ijk, k -> ij", dz_dW1, dphi_dz_H1_grad)
-        b1_grad += dphi_dz_H1_grad
+        dphi_dz_H1_grad = tf.matmul(dphi_dz, H1_grad[i][:, None])
+        W1_grad += tf.matmul(dz_dW1, dphi_dz_H1_grad)[:, :, 0]
+        b1_grad += dphi_dz_H1_grad[:, 0]
 
     return W1_grad/num_data, b1_grad/num_data
 
-def neural_network_model(train_dataset, test_dataset, step_size: float):
+def neural_network_model(train_dataset, test_dataset, test_label, step_size: float):
     '''
     X is a MxN tensor
     y is a MxK tensor
@@ -201,10 +224,20 @@ def neural_network_model(train_dataset, test_dataset, step_size: float):
 
     optimizer = tf.keras.optimizers.SGD(learning_rate=step_size)
     
+    training_accuracy_list = []
+    testing_accuracy_list = []
+    training_loss_list = []
+    testing_loss_list = []
+
     epoch = 0
     while epoch < 2:
         epoch += 1
+        iteration = 0
         for x, y in train_dataset:
+            iteration += 1
+            print(iteration)
+            
+            # Forward propagation
             H1 = hidden1(x)
             H2 = hidden2(H1)
             y_output = output(H2)
@@ -215,16 +248,18 @@ def neural_network_model(train_dataset, test_dataset, step_size: float):
             b2 = hidden2.trainable_weights[1]
             W3 = output.trainable_weights[0]
             b3 = output.trainable_weights[1]
-
+            
+            start = time.time()
             H2_grad, W3_grad, b3_grad = backward_propagation_output_hidden(y_output, y, W3, H2)
             H1_grad, W2_grad, b2_grad = backward_propagation_hidden_hidden(H1, H2_grad, W2, b2)
             W1_grad, b1_grad = backward_propagation_hidden_input(x, H1_grad, W1, b1)
-
+            print(time.time()-start)
+            
+            # Apply the gradient to each parameter
             optimizer.apply_gradients(zip([W1_grad, b1_grad, W2_grad, b2_grad, W3_grad, b3_grad], [W1, b1, W2, b2, W3, b3]))
 
-        test_x, test_y = zip(*test_dataset)
-        test_output = output(hidden2(hidden1(test_x)))
-        testing_accuracy = classification_accuracy(test_output, test_y)
+        test_output = output(hidden2(hidden1(test_dataset)))
+        testing_accuracy = classification_accuracy(test_output, test_label)
 
         print("Testing Accuracy:", testing_accuracy)
 
@@ -235,6 +270,6 @@ def neural_network_model(train_dataset, test_dataset, step_size: float):
 tf.random.set_seed(0)
 
 # Initialize the weight vectors including the bias 
-neural_network_model(train_dataset, test_dataset, step_size=10**-2)
+neural_network_model(train_dataset, test_dataset, test_label, step_size=10**-2)
 
 
