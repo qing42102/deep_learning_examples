@@ -45,6 +45,7 @@ def softmax_func(X: np.ndarray, W: np.ndarray) -> np.ndarray:
     X should be Mx(N+1)
     Return a MxK matrix
     '''
+
     exp = np.exp(X @ W)
     sum = np.sum(np.exp(X @ W), axis=1)
     return exp/sum[:, None]
@@ -53,17 +54,14 @@ def logistic_loss(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> float:
     '''
     Logistic regression cross-entropy loss
     '''
-    # Add the bias coefficient to the data
-    X = np.hstack((X, np.ones((X.shape[0], 1))))
 
     log_likelihood = np.log(softmax_func(X, W))
-    total_loss = 0.0
-    for i in range(X.shape[0]):
-        # Create the Kx1 binary vector with 1‐of‐K encoding
-        t = np.zeros(W.shape[1])
-        t[int(y[i])-1] = 1
 
-        total_loss += t @ log_likelihood[i, :].T
+    # Create the Kx1 binary vector with 1‐of‐K encoding
+    t = np.zeros((y.shape[0], W.shape[1]))
+    t[np.arange(y.size), y.astype(int)-1] = 1
+
+    total_loss = np.tensordot(t, log_likelihood, axes=2)
     
     return -total_loss/X.shape[0]
 
@@ -72,8 +70,6 @@ def logistic_loss_grad(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> np.ndarra
     Calculate the gradient for each class
     Return a (N+1)xK matrix
     '''
-    # Add the bias coefficient to the data
-    X = np.hstack((X, np.ones((X.shape[0], 1))))
 
     # Create the Kx1 binary vector with 1‐of‐K encoding
     t = np.zeros((y.shape[0], W.shape[1]))
@@ -88,8 +84,6 @@ def classification_accuracy(X: np.ndarray, W: np.ndarray, y: np.ndarray) -> floa
     '''
     Classification accuracy for the predicted and true labels
     '''
-    # Add the bias coefficient to the data
-    X = np.hstack((X, np.ones((X.shape[0], 1))))
 
     # Select the largest probability
     y_pred = np.argmax(softmax_func(X, W), axis=1)+1
@@ -102,8 +96,6 @@ def digit_accuracy(X: np.ndarray, W: np.ndarray, y: np.ndarray):
     '''
     Classification accuracy for each of the digits
     '''
-    # Add the bias coefficient to the data
-    X = np.hstack((X, np.ones((X.shape[0], 1))))
 
     # Select the largest probability
     y_pred = np.argmax(softmax_func(X, W), axis=1)+1
@@ -127,6 +119,10 @@ def gradient_descent(train_X: np.ndarray, train_y: np.ndarray, test_X: np.ndarra
     W should be (N+1)xK
     y should be Mx1
     '''
+
+    # Add the bias coefficient to the data
+    train_X = np.hstack((train_X, np.ones((train_X.shape[0], 1))))
+    test_X = np.hstack((test_X, np.ones((test_X.shape[0], 1))))
 
     training_accuracy_list = []
     testing_accuracy_list = []
@@ -165,13 +161,18 @@ def gradient_descent(train_X: np.ndarray, train_y: np.ndarray, test_X: np.ndarra
 
         iteration += 1
 
+    print("Training digits")
+    digit_accuracy(train_X, W, train_y)
+    print("Testing digits")
+    digit_accuracy(test_X, W, test_y)
+
     return training_accuracy_list, testing_accuracy_list, training_loss_list, testing_loss_list, W
 
 
 # %%
 
-num_features = train_imgs.shape[1]
-num_classes = 5
+num_features = test_imgs.shape[1]
+num_classes = len(np.unique(test_label))
 
 # Initialize the weight vectors including the bias 
 W = np.zeros(shape=(num_features+1, num_classes))
@@ -181,11 +182,6 @@ results = gradient_descent(train_X=train_imgs, train_y=train_label, test_X=test_
 
 training_accuracy, testing_accuracy, training_loss, testing_loss, W_optimal = results
 iteration = np.arange(len(training_accuracy))
-
-print("Training digits")
-digit_accuracy(X=train_imgs, W=W_optimal, y=train_label)
-print("Testing digits")
-digit_accuracy(X=test_imgs, W=W_optimal, y=test_label)
 
 plt.figure(figsize=(8, 5))
 plt.plot(iteration, training_accuracy, label="Training accuracy")
@@ -211,7 +207,5 @@ for i in range(num_classes):
 filehandler = open("multiclass_parameters.txt","wb")
 pickle.dump(W_optimal, filehandler)
 filehandler.close()
-
-
 
 # %%

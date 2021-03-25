@@ -58,12 +58,9 @@ def loss(y_output: tf.Tensor, y_label: tf.Tensor) -> float:
     y_label is a MxK tensor
     '''
 
-    total_loss = 0.0
-    for i in range(y_output.shape[0]):
-        loss = tf.tensordot(y_label[i], tf.math.log(y_output[i]), axes=1)
-        total_loss += loss.numpy()
+    total_loss = tf.tensordot(y_label, tf.math.log(y_output), axes=2)
     
-    return -total_loss/y_output.shape[0]
+    return -total_loss.numpy()/y_output.shape[0]
 
 def classification_accuracy(y_output: tf.Tensor, y_label: tf.Tensor) -> float:
     '''
@@ -289,7 +286,8 @@ def neural_network_model(train_dataset, test_dataset, test_label):
                 training_loss_list.append(training_loss)
                 testing_loss_list.append(testing_loss)
 
-                print("Testing Accuracy:", testing_accuracy)
+                print("Training Accuracy:", training_accuracy, "Training Loss:", training_loss)
+                print("Testing Accuracy:", testing_accuracy, "Testing Loss:", testing_loss)
 
     digit_accuracy(test_output, test_label, num_classes)
 
